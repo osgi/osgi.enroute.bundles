@@ -10,7 +10,8 @@ like profiles, macro expansion, binary resource handling, and configuration thro
 See the readme.md file for more details.
 
 Export-Package:  \
-	osgi.enroute.configurer.simple.provider.api;provide:=true
+  	osgi.enroute.configurer.simple.provider.api;provide:=true,\
+	osgi.enroute.configurer.api
 
 Private-Package:  \
 	osgi.enroute.configurer.simple.provider

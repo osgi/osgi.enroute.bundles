@@ -36,12 +36,23 @@ import osgi.enroute.webserver.capabilities.*;
 
 @ProvideCapability(ns = ExtenderNamespace.EXTENDER_NAMESPACE, name = WebServerConstants.WEB_SERVER_EXTENDER_NAME, version = WebServerConstants.WEB_SERVER_EXTENDER_VERSION)
 @RequireHttpImplementation
-@Component(service = Servlet.class, immediate = true, property = {
-		HttpWhiteboardConstants.HTTP_WHITEBOARD_SERVLET_PATTERN + "=" + "/", "name=" + WebServer.NAME, "no.index=true"
-}, name = WebServer.NAME, configurationPolicy = ConfigurationPolicy.OPTIONAL)
+@Component(
+		service = Servlet.class, 
+		immediate = true, 
+		property = {
+				HttpWhiteboardConstants.HTTP_WHITEBOARD_CONTEXT_PATH + "=/", 
+				HttpWhiteboardConstants.HTTP_WHITEBOARD_SERVLET_PATTERN + "=/osgi.enroute.webresource", 
+				HttpWhiteboardConstants.HTTP_WHITEBOARD_SERVLET_PATTERN + "=/osgi.enroute.contributions",
+				HttpWhiteboardConstants.HTTP_WHITEBOARD_SERVLET_PATTERN + "=/" + WebServer.BND_NAMESPACE,
+				"name=" + WebServer.NAME, 
+				"no.index=true"
+		}, 
+		name = WebServer.NAME, 
+		configurationPolicy = ConfigurationPolicy.OPTIONAL)
 public class WebServer extends HttpServlet {
 
 	static final String NAME = "osgi.enroute.simple.server";
+	static final String BND_NAMESPACE = "bnd";
 
 	public class RedirectException extends RuntimeException {
 		private static final long	serialVersionUID	= 1L;
@@ -579,16 +590,14 @@ public class WebServer extends HttpServlet {
 			return pluginContributions
 					.findCachedPlugins(path.substring(PluginContributions.CONTRIBUTIONS.length() + 1));
 
+		if (path.startsWith(BND_NAMESPACE + "/"))
+			return findBundle(path.substring(BND_NAMESPACE.length() +1));
+
 		Cache c = webResources.find(path);
 		if (c != null)
 			return c;
 
-		c = findFile(path);
-		if (c != null)
-			return c;
-		// if (config.noBundles())
-		// return null;
-		return findBundle(path);
+		return findFile(path);
 	}
 
 	/**

@@ -8,8 +8,10 @@ Bundle-Description: 				\
 	Provides a simple implementation of the OSGi enRoute webserver with a number \
 	of useful filters.
 Export-Package: \
-	aQute.service.reporter, \
-	osgi.enroute.webserver.capabilities
+	aQute.service.reporter,\
+	osgi.enroute.webserver.capabilities,\
+	osgi.enroute.rootservlet.api2,\
+	osgi.enroute.rootservlet.api
 	
 Private-Package:  \
 	osgi.enroute.web.server.provider

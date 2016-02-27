@@ -1,4 +1,4 @@
-package osgi.enroute.rootservlet.api;
+package osgi.enroute.servlet.api;
 
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;

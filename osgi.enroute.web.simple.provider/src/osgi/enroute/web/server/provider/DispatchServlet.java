@@ -6,16 +6,29 @@ import java.util.*;
 import javax.servlet.*;
 import javax.servlet.http.*;
 
+import org.osgi.framework.*;
 import org.osgi.service.component.annotations.*;
+import org.osgi.service.http.whiteboard.*;
 
-import osgi.enroute.rootservlet.api.*;
+import osgi.enroute.servlet.api.*;
 
-@Component(property="path=/", service=Servlet.class)
+@Component(
+		property 	=
+		{
+			    HttpWhiteboardConstants.HTTP_WHITEBOARD_SERVLET_PATTERN + "=/", 
+			    "name=DispatchServlet", 
+			    "no.index=true",
+				Constants.SERVICE_RANKING + ":Integer=100"
+		},
+		service		= Servlet.class,
+		immediate	= true )
 public class DispatchServlet extends HttpServlet {
 
 	private static final long serialVersionUID = 1L;
 
-	@Reference (target = "(path=/)")
+	@Reference (
+			target 		= "(" + HttpWhiteboardConstants.HTTP_WHITEBOARD_SERVLET_PATTERN + "=/)",
+			cardinality	= ReferenceCardinality.AT_LEAST_ONE)
 	volatile List<ConditionalServlet> targets;
 
 	public void service(HttpServletRequest rq, HttpServletResponse rsp) throws ServletException, IOException {

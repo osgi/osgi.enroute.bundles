@@ -10,8 +10,7 @@ Bundle-Description: 				\
 Export-Package: \
 	aQute.service.reporter,\
 	osgi.enroute.webserver.capabilities,\
-	osgi.enroute.rootservlet.api2,\
-	osgi.enroute.rootservlet.api
+	osgi.enroute.servlet.api
 	
 Private-Package:  \
 	osgi.enroute.web.server.provider
@@ -72,3 +71,4 @@ Conditional-Package: aQute.lib*
 	
 	
 -runtrace: true
+Bundle-Version: 1.3.4.${tstamp}

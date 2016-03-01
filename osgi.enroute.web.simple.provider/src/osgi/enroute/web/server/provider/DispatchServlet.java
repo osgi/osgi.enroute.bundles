@@ -56,12 +56,15 @@ public class DispatchServlet extends HttpServlet {
 				if (!isBlacklisted(cs) && cs.doConditionalService(rq, rsp))
 					return;
 			} catch (Exception e) {
-				// Blacklist this servlet by adding to the blacklist
-				long now = System.currentTimeMillis();
-				long unlistingTime = now + config.timeout();
-				blacklist.put(cs, unlistingTime);
+				String message = "Exception thrown by ConditionalServlet.";
+				if(config.timeout() != 0) {
+					// Blacklist this servlet by adding to the blacklist
+					long now = System.currentTimeMillis();
+					long unlistingTime = now + config.timeout();
+					blacklist.put(cs, unlistingTime);
+					message += " This servlet has been blacklisted!";
+				}
 
-				String message = "Exception thrown by ConditionalServlet. This servlet has been blacklisted!";
 				log.log(LogService.LOG_ERROR, message, e);
 				throw new ServletException(message, e);
 			}
@@ -80,6 +83,10 @@ public class DispatchServlet extends HttpServlet {
 		// If the servlet is not in the blacklist, then we're good to go!
 		if(!blacklist.containsValue(cs))
 			return false;
+
+		// If the value is -1, then the blacklist lasts forever
+		if(config.timeout() == -1)
+			return true;
 
 		// If the blacklist timeout has not yet expired, then this servlet should be ignored.
 		long unlistingTime = blacklist.get(cs);

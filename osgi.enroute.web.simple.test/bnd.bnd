@@ -1,0 +1,27 @@
+#
+# OSGI ENROUTE WEB SIMPLE TEST PROVIDER BUNDLE 
+#
+
+
+base.version: 1.3.3
+Bundle-Version:					1.0.0.${tstamp}
+Bundle-Description: Test case for osgi.enroute.web.simple.provider
+
+Private-Package:  \
+	osgi.enroute.web.simple.test
+	
+-buildpath: \
+	osgi.enroute.base.api;version=1.0,\
+	osgi.enroute.web.simple.provider;version=latest
+	
+-testpath: \
+	osgi.enroute.junit.wrapper;version=4.12
+
+-includeresource: {readme.md}
+
+
+-runrequires:  \
+	osgi.identity;filter:='(osgi.identity=osgi.enroute.web.simple.test.provider)'
+	
+-runbundles: \
+	${error;Resolve first}

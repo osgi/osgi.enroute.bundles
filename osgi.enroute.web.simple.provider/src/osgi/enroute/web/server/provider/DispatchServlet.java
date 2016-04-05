@@ -14,9 +14,9 @@ import org.osgi.service.log.*;
 
 import osgi.enroute.servlet.api.*;
 
-@Component(name = "osgi.enroute.web.service.provider", //
+@Component(
+		name = "osgi.enroute.web.service.provider",
 		property = {
-
 				HttpWhiteboardConstants.HTTP_WHITEBOARD_SERVLET_PATTERN + "=/", "name=DispatchServlet", "no.index=true",
 				Constants.SERVICE_RANKING + ":Integer=100"
 		}, service = Servlet.class, configurationPolicy = ConfigurationPolicy.OPTIONAL, immediate = true)

@@ -124,15 +124,24 @@ public class DispatcherTest extends TestCase {
 	public void testRankingServlets() throws Exception {
 		ServiceRegistration<ConditionalServlet> r100 = context.registerService(ConditionalServlet.class,
 				new TestServlet("100"), MAP.$(Constants.SERVICE_RANKING, 100).asHashtable());
-		ServiceRegistration<ConditionalServlet> r50 = context.registerService(ConditionalServlet.class,
-				new TestServlet("50"), MAP.$(Constants.SERVICE_RANKING, 50).asHashtable());
+		ServiceRegistration<ConditionalServlet> r10 = context.registerService(ConditionalServlet.class,
+				new TestServlet("10"), MAP.$(Constants.SERVICE_RANKING, 10).asHashtable());
+        ServiceRegistration<ConditionalServlet> r90 = context.registerService(ConditionalServlet.class,
+                new TestServlet("90"), MAP.$(Constants.SERVICE_RANKING, 90).asHashtable());
+        ServiceRegistration<ConditionalServlet> r20 = context.registerService(ConditionalServlet.class,
+                new TestServlet("20"), MAP.$(Constants.SERVICE_RANKING, 20).asHashtable());
+        ServiceRegistration<ConditionalServlet> r50 = context.registerService(ConditionalServlet.class,
+                new TestServlet("50"), MAP.$(Constants.SERVICE_RANKING, 50).asHashtable());
 
 		try {
 			URL url = new URL("http://localhost:8080/foo");
 			String s = IO.collect(url.openStream());
-			assertEquals("50:/foo", s);
+			assertEquals("10:/foo", s);
 		} finally {
 			r100.unregister();
+			r10.unregister();
+			r90.unregister();
+			r20.unregister();
 			r50.unregister();
 		}
 	}
@@ -178,8 +187,8 @@ public class DispatcherTest extends TestCase {
 		}
 	}
 
-	@Reference
-	void setConfigurationDone( ConfigurationDone d) {
-		System.out.println("Configuration Done");
-	}
+    @Reference
+    void setConfigurationDone(ConfigurationDone d) {
+        System.out.println("Configuration Done");
+    }
 }

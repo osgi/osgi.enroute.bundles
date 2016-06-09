@@ -3,14 +3,7 @@ package osgi.enroute.configurer.simple.provider;
 import java.io.File;
 import java.io.IOException;
 import java.net.URL;
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.Dictionary;
-import java.util.HashMap;
-import java.util.Hashtable;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.Map.Entry;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
@@ -41,6 +34,8 @@ import aQute.lib.settings.Settings;
 import aQute.libg.sed.ReplacerAdapter;
 import osgi.enroute.configurer.api.ConfigurationDone;
 import osgi.enroute.configurer.api.ConfigurerConstants;
+
+import static java.lang.String.format;
 
 /**
  * This component is an extender that reads {@link #CONFIGURATION_LOC} file.
@@ -80,7 +75,7 @@ public class Configurer implements ConfigurationDone {
 	static Pattern					PROFILE_PATTERN		= Pattern.compile("\\[([a-zA-Z0-9]+)\\](.*)");
 	Settings						settings			= new Settings("~/.enRoute/settings.json");
 	LogService						log;
-	BundleTracker< ? >				tracker;
+    BundleTracker<List<String>>     tracker;
 	ConfigurationAdmin				cm;
 	String							profile;
 	File							dir;
@@ -88,433 +83,454 @@ public class Configurer implements ConfigurationDone {
 	Bundle							currentBundle;
 	private Coordinator				coordinator;
 
+    private List<String>            extraPids;
+
+    /*
+     * Track all bundles and read their configuration.
+     */
+    @Activate
+    void activate(BundleContext context) throws Exception {
+        //
+        // Reserve space for the resources
+        //
+        dir = context.getDataFile("resources");
+        dir.mkdirs();
+
+        Map<String, String> map = new HashMap<>();
+        map.putAll(settings);
+        map.putAll(converter.convert(new TypeReference<Map<String, String>>() {
+        }, System.getProperties()));
+        this.base = Collections.unmodifiableMap(map);
+        Coordination coordination = coordinator.begin("enRoute.configurer", TimeUnit.SECONDS.toMillis(20));
+        try {
+            tracker = new BundleTracker<List<String>>(context, Bundle.ACTIVE | Bundle.STARTING, null) {
+
+                @Override
+                public List<String> addingBundle(Bundle bundle, BundleEvent event) {
+                    try {
+                        boolean defined = true;
+                        String h = bundle.getHeaders().get(ConfigurationDone.BUNDLE_CONFIGURATION);
+                        if (h == null) {
+                            //
+                            // We use a default configuration if the header is
+                            // not set for convenience
+                            //
+                            h = CONFIGURATION_LOC;
+                            defined = false;
+                        }
+
+                        h = h.trim();
+                        if (h.isEmpty())
+                            //
+                            // If there is an empty value, we assume
+                            // the user does not want it ...
+                            //
+                            return null;
+
+                        URL url = bundle.getEntry(h);
+                        if (url == null) {
+                            return null;
+                        }
+
+                        String s = IO.collect(url);
+                        if (s == null) {
+                            if (defined)
+                                log.log(LogService.LOG_INFO,
+                                        format("Cannot find configuration for bundle %s %s in %s %s", bundle.getSymbolicName(), bundle.getVersion(), h, url));
+                            return null;
+                        }
+
+                        return configure(bundle, s);
+                    } catch (IOException e) {
+                        log.log(LogService.LOG_ERROR, format("Failed to set configuration for %s", bundle), e);
+                    }
+
+                    return null;
+                }
+
+                @Override
+                public void removedBundle(Bundle bundle, BundleEvent event, List<String> pids) {
+                    purge(pids);
+                }
+            };
+
+            tracker.open(); // this will iterate over all bundles synchronously
+
+            //
+            // Check if we have any extra configuration via system properties
+            //
+
+            String s = System.getProperty(CONFIGURER_EXTRA);
+            if (s != null)
+                extraPids = configure(context.getBundle(), s);
+
+        } catch (Exception e) {
+            coordination.fail(e);
+        } finally {
+            coordination.end();
+        }
+
+    }
+
+    /*
+     * Deactivate
+     */
+    void deactivate() {
+        tracker.close();
+
+        purge(extraPids);
+    }
+
+    private void purge(List<String> pids) {
+        if (pids != null) {
+            for (String pid : pids) {
+                try {
+                    cm.getConfiguration(pid, "?").delete();
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
+            }
+        }
+    }
+
+    /*
+     * Main work horse
+     */
+    static Pattern AT_MACRO_P = Pattern.compile("@\\{(?>.*\\})");
+    static Pattern MACRO_P = Pattern.compile("(?!\\\\)$\\{(?>.*\\})");
+
+    List<String> configure(Bundle bundle, String data) {
+        List<String> pids = new ArrayList<>(); // list of configuration PIDs
+
+        try {
+            //
+            // First replace @{ ... } with ${...}. This is
+            // optional but allows easy separation from other
+            // macro processors
+            //
+
+            data = data.replaceAll("(?!\\\\)@\\{", "\\${");
+
+            ReplacerAdapter replacer = new ReplacerAdapter(base);
+            replacer.target(this);
+
+            currentBundle = bundle;
+            data = replacer.process(data);
+            currentBundle = null;
+
+            if (profile == null)
+                profile = base.containsKey(EN_ROUTE_PROFILE) ? base.get(EN_ROUTE_PROFILE) : "debug";
+
+            log.log(LogService.LOG_INFO, format("Profile is %s", profile));
+
+            //
+            // Since we need to work with Dictionary, it is convenient to
+            // get the result in a list of Hashtable (which implements
+            // Dictionary).
+            //
+
+            final List<Hashtable<String, Object>> list = codec.dec().from(data)
+                    .get(new TypeReference<List<Hashtable<String, Object>>>() {
+                    });
+
+            //
+            // Process each dictionary
+            //
+
+            for (Map<String, Object> d : list) {
+
+                Hashtable<String, Object> dictionary = new Hashtable<String, Object>();
+
+                getDict(d, dictionary);
+
+                //
+                // We now have a dictionary and should update config admin.
+                // The
+                // dictionary
+                // must contain a pid, and may contain a factory pid.
+                // A factory pid implies that the pid is symbolic since it
+                // will
+                // be assigned
+                // by config admin.
+                //
+
+                String factory = (String) dictionary.get("service.factoryPid");
+                String pid = (String) dictionary.get("service.pid");
+
+                if (pid == null) {
+                    log.log(LogService.LOG_ERROR, format("Invalid configuration, no PID specified: %s", dictionary));
+                    continue;
+                }
+
+                try {
+                    Configuration configuration;
+
+                    if (factory != null) {
+
+                        //
+                        // We have a factory configuration, so the PID is
+                        // symbolic
+                        // now
+                        //
+
+                        dictionary.put(LOGICAL_PID_KEY, pid);
+                        dictionary.put(BUNDLE_KEY, bundle.getBundleId());
+
+                        //
+                        // We use the symbolic PID to find an existing record.
+                        // if it does not exist, we create a new one.
+                        //
+
+                        Configuration instances[] = cm.listConfigurations("(&(" + LOGICAL_PID_KEY + "=" + pid
+                                + ")(service.factoryPid=" + factory + "))");
+                        if (instances == null || instances.length == 0) {
+                            configuration = cm.createFactoryConfiguration(factory, "?");
+                        } else {
+                            configuration = instances[0];
+                        }
+
+                    } else {
+
+                        //
+                        // normal target configuration
+                        //
+
+                        configuration = cm.getConfiguration(pid, "?");
+                    }
+
+                    configuration.setBundleLocation("?");
+
+                    Dictionary<?, ?> current = configuration.getProperties();
+                    if (current != null && isEqual(dictionary, current))
+                        continue;
+
+                    configuration.update(dictionary);
+                    pids.add(configuration.getPid()); // add to the list of configuration pids
+                } catch (Exception e) {
+                    log.log(LogService.LOG_ERROR, format("While configuring %s, configuration pid %s, factoryPid %s",
+                            bundle.getBundleId(), pid, factory), e);
+                }
+            }
+        } catch (Exception e) {
+            log.log(LogService.LOG_ERROR, format("While configuring %s, configuration is %s", bundle.getBundleId(), data), e);
+        }
+
+        return pids;
+    }
+
+    /*
+     * Build a dictionary from the JSON map we got. We handle the profiles here
+     * by looking at the key, if it is a profile key, and the profile matches,
+     * we add the non-profile key. Otherwise we do some other stuff like logging
+     * and comments.
+     */
+    private void getDict(Map<String, Object> d, Hashtable<String, Object> dictionary) throws Exception {
+        for (Entry<String, Object> e : d.entrySet()) {
+
+            String key = e.getKey();
+            Object value = e.getValue();
+
+            Matcher m = PROFILE_PATTERN.matcher(e.getKey());
+            boolean prfile = false;
+
+            if (m.matches()) {
+
+                //
+                // Check if a key is a profile key (starts wit [...]
+                // if so, fix it up. That is, if it matches out
+                // current profile, we remove the prefix and use
+                // it, otherwise we ignore it
+                //
+
+                String profile = m.group(1);
+                if (!profile.equals(this.profile))
+                    continue;
+
+                key = m.group(2);
+                prfile = true;
+
+            } else if (e.getKey().equals(".log")) {
+                //
+                // .log entries are ignored but send to the logger
+                //
+                log.log(LogService.LOG_INFO, converter.convert(String.class, d.get(".log")));
+                continue;
+
+            } else if (e.getKey().startsWith(".comment"))
+                //
+                // Keys tha start with .comment are ignored
+                //
+                continue;
+
+            //
+            // Check if all macros were resolved
+            //
+            if (value != null && value instanceof String) {
+                Matcher matcher = MACRO_P.matcher((String) value);
+                if (matcher.find()) {
+                    log.log(LogService.LOG_ERROR, format("Configuration has detected macros that are not resolved: %s = %s", key, value));
+                }
+            }
+
+            //
+            // Profile keys should always override, Otherwise, first one wins
+            //
+            if (prfile || !dictionary.containsKey(key))
+                dictionary.put(key, value);
+
+        }
+    }
+
 	/*
-	 * Track all bundles and read their configuration.
-	 */
-	@Activate
-	void activate(BundleContext context) throws Exception {
-		//
-		// Reserve space for the resources
-		//
-		dir = context.getDataFile("resources");
-		dir.mkdirs();
-
-		Map<String,String> map = new HashMap<>();
-		map.putAll(settings);
-		map.putAll(converter.convert(new TypeReference<Map<String,String>>() {}, System.getProperties()));
-		this.base = Collections.unmodifiableMap(map);
-		Coordination coordination = coordinator.begin("enRoute.configurer", TimeUnit.SECONDS.toMillis(20));
-		try {
-			tracker = new BundleTracker<Object>(context, Bundle.ACTIVE | Bundle.STARTING, null) {
-
-				@Override
-				public Object addingBundle(Bundle bundle, BundleEvent event) {
-					try {
-						boolean defined = true;
-						String h = bundle.getHeaders().get(ConfigurationDone.BUNDLE_CONFIGURATION);
-						if (h == null) {
-							//
-							// We use a default configuration if the header is
-							// not set for convenience
-							//
-							h = CONFIGURATION_LOC;
-							defined = false;
-						}
-
-						h = h.trim();
-						if (h.isEmpty())
-							//
-							// If there is an empty value, we assume
-							// the user does not want it ...
-							//
-							return null;
-
-						URL url = bundle.getEntry(h);
-						if (url == null) {
-							return null;
-						}
-
-						String s = IO.collect(url);
-						if (s == null) {
-							if ( defined )
-								log.log(LogService.LOG_INFO, "Cannot find configuration for bundle "+bundle.getSymbolicName() + " " + bundle.getVersion()+" in " + h + " " + url);
-							return null;
-						}
-
-						configure(bundle, s);
-					}
-					catch (IOException e) {
-						log.log(LogService.LOG_ERROR, "Failed to set configuration for " + bundle, e);
-					}
-
-					//
-					// We do not have to track this, we leave the configuration
-					// in cm. TODO purge command
-					//
-					return null;
-				}
-			};
-
-			tracker.open(); // this will iterate over all bundles synchronously
-
-			//
-			// Check if we have any extra configuration via system properties
-			//
-
-			String s = System.getProperty(CONFIGURER_EXTRA);
-			if (s != null)
-				configure(context.getBundle(), s);
-
-		}
-		catch (Exception e) {
-			coordination.fail(e);
-		}
-		finally {
-			coordination.end();
-		}
-
-	}
-
-	/*
-	 * Deactivate
-	 */
-	void deactivate() {
-		tracker.close();
-	}
-
-	/*
-	 * Main work horse
-	 */
-	static Pattern	AT_MACRO_P	= Pattern.compile("@\\{(?>.*\\})");
-	static Pattern	MACRO_P		= Pattern.compile("(?!\\\\)$\\{(?>.*\\})");
-
-	void configure(Bundle bundle, String data) {
-		try {
-
-			//
-			// First replace @{ ... } with ${...}. This is
-			// optional but allows easy separation from other
-			// macro processors
-			//
-
-			data = data.replaceAll("(?!\\\\)@\\{", "\\${");
-
-			ReplacerAdapter replacer = new ReplacerAdapter(base);
-			replacer.target(this);
-
-			currentBundle = bundle;
-			data = replacer.process(data);
-			currentBundle = null;
-
-			if (profile == null)
-				profile = base.containsKey(EN_ROUTE_PROFILE) ? base.get(EN_ROUTE_PROFILE) : "debug";
-
-			log.log(LogService.LOG_INFO, "Profile is " + profile);
-
-			//
-			// Since we need to work with Dictionary, it is convenient to
-			// get the result in a list of Hashtable (which implements
-			// Dictionary).
-			//
-
-			final List<Hashtable<String,Object>> list = codec.dec().from(data)
-					.get(new TypeReference<List<Hashtable<String,Object>>>() {});
-
-			//
-			// Process each dictionary
-			//
-
-			for (Map<String,Object> d : list) {
-
-				Hashtable<String,Object> dictionary = new Hashtable<String,Object>();
-
-				getDict(d, dictionary);
-
-				//
-				// We now have a dictionary and should update config admin.
-				// The
-				// dictionary
-				// must contain a pid, and may contain a factory pid.
-				// A factory pid implies that the pid is symbolic since it
-				// will
-				// be assigned
-				// by config admin.
-				//
-
-				String factory = (String) dictionary.get("service.factoryPid");
-				String pid = (String) dictionary.get("service.pid");
-
-				if (pid == null) {
-					log.log(LogService.LOG_ERROR, "Invalid configuration, no PID specified: " + dictionary);
-					continue;
-				}
-
-				Configuration configuration;
-
-				if (factory != null) {
-
-					//
-					// We have a factory configuration, so the PID is
-					// symbolic
-					// now
-					//
-
-					dictionary.put(LOGICAL_PID_KEY, pid);
-					dictionary.put(BUNDLE_KEY, bundle.getBundleId());
-
-					//
-					// We use the symbolic PID to find an existing record.
-					// if it does not exist, we create a new one.
-					//
-
-					Configuration instances[] = cm.listConfigurations("(&(" + LOGICAL_PID_KEY + "=" + pid
-							+ ")(service.factoryPid=" + factory + "))");
-					if (instances == null || instances.length == 0) {
-						configuration = cm.createFactoryConfiguration(factory, "?");
-					} else {
-						configuration = instances[0];
-					}
-
-				} else {
-
-					//
-					// normal target configuration
-					//
-
-					configuration = cm.getConfiguration(pid, "?");
-				}
-
-				configuration.setBundleLocation("?");
-
-				Dictionary< ? , ? > current = configuration.getProperties();
-				if (current != null && isEqual(dictionary, current))
-					continue;
-
-				configuration.update(dictionary);
-			}
-		}
-		catch (Exception e) {
-			log.log(LogService.LOG_ERROR, "While configuring " + bundle.getBundleId() + ", configuration is " + data, e);
-		}
-	}
-
-	/*
-	 * Build a dictionary from the JSON map we got. We handle the profiles here
-	 * by looking at the key, if it is a profile key, and the profile matches,
-	 * we add the non-profile key. Otherwise we do some other stuff like logging
-	 * and comments.
-	 */
-	private void getDict(Map<String,Object> d, Hashtable<String,Object> dictionary) throws Exception {
-		for (Entry<String,Object> e : d.entrySet()) {
-
-			String key = e.getKey();
-			Object value = e.getValue();
-
-			Matcher m = PROFILE_PATTERN.matcher(e.getKey());
-			boolean prfile = false;
-			
-			if (m.matches()) {
-
-				//
-				// Check if a key is a profile key (starts wit [...]
-				// if so, fix it up. That is, if it matches out
-				// current profile, we remove the prefix and use
-				// it, otherwise we ignore it
-				//
-
-				String profile = m.group(1);
-				if (!profile.equals(this.profile))
-					continue;
-
-				key = m.group(2);
-				prfile = true;
-
-			} else if (e.getKey().equals(".log")) {
-				//
-				// .log entries are ignored but send to the logger
-				//
-				log.log(LogService.LOG_INFO, converter.convert(String.class, d.get(".log")));
-				continue;
-
-			} else if (e.getKey().startsWith(".comment"))
-				//
-				// Keys tha start with .comment are ignored
-				//
-				continue;
-
-			//
-			// Check if all macros were resolved
-			//
-			if (value != null && value instanceof String) {
-				Matcher matcher = MACRO_P.matcher((String) value);
-				if (matcher.find()) {
-					log.log(LogService.LOG_ERROR, "Configuration has detected macros that are not resolved: " + key
-							+ "=" + value);
-				}
-			}
-
-			//
-			// Profile keys should always override, Otherwise, first one wins
-			//
-			if ( prfile || !dictionary.containsKey(key))
-				dictionary.put(key, value);
-
-		}
-	}
-
-	/*
-	 * We do not want to update a configuration unless it really has been
+     * We do not want to update a configuration unless it really has been
 	 * changed
 	 */
 
-	@SuppressWarnings("unchecked")
-	private boolean isEqual(Hashtable<String,Object> a, Dictionary< ? , ? > b) {
+    @SuppressWarnings("unchecked")
+    private boolean isEqual(Hashtable<String, Object> a, Dictionary<?, ?> b) {
 
-		for (Entry<String,Object> e : a.entrySet()) {
-			if (e.getKey().equals("service.pid"))
-				continue;
+        for (Entry<String, Object> e : a.entrySet()) {
+            if (e.getKey().equals("service.pid"))
+                continue;
 
-			Object value = b.get(e.getKey());
-			if (value == e.getValue())
-				continue;
+            Object value = b.get(e.getKey());
+            if (value == e.getValue())
+                continue;
 
-			if (value == null)
-				return false;
+            if (value == null)
+                return false;
 
-			if (e.getValue() == null)
-				return false;
+            if (e.getValue() == null)
+                return false;
 
-			if (value.equals(e.getValue()))
-				continue;
+            if (value.equals(e.getValue()))
+                continue;
 
-			if (value.getClass().isArray()) {
-				Object[] aa = {
-					value
-				};
-				Object[] bb = {
-					e.getValue()
-				};
-				if (!Arrays.deepEquals(aa, bb))
-					return false;
-			} else if (value instanceof Collection && e.getValue() instanceof Collection) {
-				ExtList<Object> aa = new ExtList<Object>((Collection<Object>) value);
-				ExtList<Object> bb = new ExtList<Object>((Collection<Object>) e.getValue());
-				if (!aa.equals(bb))
-					return false;
-			} else {
-				log.log(LogService.LOG_INFO,
-						"Updating config because " + a.get("service.pid") + " has a different value for " + e.getKey()
-								+ ". Old value " + value + ", new value: " + e.getValue());
-				return false;
-			}
-		}
-		return true;
-	}
+            if (value.getClass().isArray()) {
+                Object[] aa = {
+                        value
+                };
+                Object[] bb = {
+                        e.getValue()
+                };
+                if (!Arrays.deepEquals(aa, bb))
+                    return false;
+            } else if (value instanceof Collection && e.getValue() instanceof Collection) {
+                ExtList<Object> aa = new ExtList<Object>((Collection<Object>) value);
+                ExtList<Object> bb = new ExtList<Object>((Collection<Object>) e.getValue());
+                if (!aa.equals(bb))
+                    return false;
+            } else {
+                log.log(LogService.LOG_INFO,
+                        "Updating config because " + a.get("service.pid") + " has a different value for " + e.getKey()
+                                + ". Old value " + value + ", new value: " + e.getValue());
+                return false;
+            }
+        }
+        return true;
+    }
 
-	/*
-	 * This macro gets a resource from the bundle. It will copy this resource
-	 * somewhere on the file system. It will return the actual file name. This
-	 * is very useful for certificates
-	 */
-	public String _resource(String args[]) throws IOException {
-		if (args.length != 2) {
-			log.log(LogService.LOG_ERROR, "The ${resource} macro only takes 1 argument, the resource path");
-			return null;
-		}
+    /*
+     * This macro gets a resource from the bundle. It will copy this resource
+     * somewhere on the file system. It will return the actual file name. This
+     * is very useful for certificates
+     */
+    public String _resource(String args[]) throws IOException {
+        if (args.length != 2) {
+            log.log(LogService.LOG_ERROR, "The ${resource} macro only takes 1 argument, the resource path");
+            return null;
+        }
 
-		URL url = currentBundle.getEntry(args[1]);
-		if (url == null) {
-			log.log(LogService.LOG_ERROR, "The ${resource;" + args[1] + "} macro cannot find the bundle resource ");
-			return null;
-		}
+        URL url = currentBundle.getEntry(args[1]);
+        if (url == null) {
+            log.log(LogService.LOG_ERROR, format("The ${resource;%s} macro cannot find the bundle resource ", args[1]));
+            return null;
+        }
 
-		String path = url.getPath();
+        String path = url.getPath();
 
-		//
-		// Make sure that the path is safe so someone cannot use this
-		// to access the root or other files outside its data area
-		//
+        //
+        // Make sure that the path is safe so someone cannot use this
+        // to access the root or other files outside its data area
+        //
 
-		if (path.startsWith("/") || path.startsWith("~"))
-			path = path.substring(1);
+        if (path.startsWith("/") || path.startsWith("~"))
+            path = path.substring(1);
 
-		String safe = path.replaceAll("[^\\w\\d._-]|\\.\\.", "_");
-		File dir = currentBundle.getDataFile("");
-		File out = IO.getFile(dir, safe);
+        String safe = path.replaceAll("[^\\w\\d._-]|\\.\\.", "_");
+        File dir = currentBundle.getDataFile("");
+        File out = IO.getFile(dir, safe);
 
-		out.getParentFile().mkdirs();
-		if (!out.getParentFile().isDirectory()) {
-			log.log(LogService.LOG_ERROR, "Cannot create configuration directory " + dir + " in bundle "
-					+ currentBundle);
-		}
+        out.getParentFile().mkdirs();
+        if (!out.getParentFile().isDirectory()) {
+            log.log(LogService.LOG_ERROR, format("Cannot create configuration directory %s in bundle %s", dir, currentBundle));
+        }
 
-		try {
-			IO.copy(url.openStream(), out);
-		}
-		catch (Exception e) {
-			log.log(LogService.LOG_ERROR, "Cannot copy a resource " + out + " from bundle " + currentBundle
-					+ " resource " + url);
-		}
+        try {
+            IO.copy(url.openStream(), out);
+        } catch (Exception e) {
+            log.log(LogService.LOG_ERROR, format("Cannot copy a resource %s  from bundle %s resource %s", out, currentBundle, url));
+        }
 
-		return out.getAbsolutePath();
-	}
+        return out.getAbsolutePath();
+    }
 
 	/*
-	 * Macro to provide current bundle id
+     * Macro to provide current bundle id
 	 */
 
-	public String _bundleid(String args[]) {
-		if (args.length != 1) {
-			log.log(LogService.LOG_ERROR, "The ${bundleid} macro takes no parameters");
-			return null;
-		}
+    public String _bundleid(String args[]) {
+        if (args.length != 1) {
+            log.log(LogService.LOG_ERROR, "The ${bundleid} macro takes no parameters");
+            return null;
+        }
 
-		return currentBundle.getBundleId() + "";
-	}
+        return currentBundle.getBundleId() + "";
+    }
 
 	/*
-	 * Macro to provide current location
+     * Macro to provide current location
 	 */
 
-	public String _location(String args[]) {
-		if (args.length != 1) {
-			log.log(LogService.LOG_ERROR, "The ${location} macro takes no parameters");
-			return null;
-		}
+    public String _location(String args[]) {
+        if (args.length != 1) {
+            log.log(LogService.LOG_ERROR, "The ${location} macro takes no parameters");
+            return null;
+        }
 
-		return currentBundle.getLocation();
-	}
+        return currentBundle.getLocation();
+    }
 
-	@Reference
-	void setLogService(LogService log) {
-		this.log = log;
-	}
+    @Reference
+    void setLogService(LogService log) {
+        this.log = log;
+    }
 
-	@Reference
-	void setCoordinator(Coordinator coordinator) {
-		this.coordinator = coordinator;
-	}
+    @Reference
+    void setCoordinator(Coordinator coordinator) {
+        this.coordinator = coordinator;
+    }
 
-	@Reference
-	void setCM(ConfigurationAdmin cm) {
-		this.cm = cm;
-	}
+    @Reference
+    void setCM(ConfigurationAdmin cm) {
+        this.cm = cm;
+    }
 
-	/*
-	 * We need the launcher's arguments to get a profile
-	 */
-	@Reference(cardinality = ReferenceCardinality.OPTIONAL, target = "(launcher.arguments=*)")
-	synchronized void setLauncher(Object obj, Map<String,Object> props) {
-		String[] args = (String[]) props.get("launcher.arguments");
-		for (int i = 0; i < args.length - 1; i++) {
-			if (args[i].equals("--profile")) {
-				this.profile = args[i++];
-				return;
-			}
-		}
-	}
+    /*
+     * We need the launcher's arguments to get a profile
+     */
+    @Reference(cardinality = ReferenceCardinality.OPTIONAL, target = "(launcher.arguments=*)")
+    synchronized void setLauncher(Object obj, Map<String, Object> props) {
+        String[] args = (String[]) props.get("launcher.arguments");
+        for (int i = 0; i < args.length - 1; i++) {
+            if (args[i].equals("--profile")) {
+                this.profile = args[i++];
+                return;
+            }
+        }
+    }
 
-	void unsetLauncher(Object obj) {
+    void unsetLauncher(Object obj) {
 
-	}
+    }
 }

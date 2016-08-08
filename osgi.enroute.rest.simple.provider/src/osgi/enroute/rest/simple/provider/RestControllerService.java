@@ -68,9 +68,11 @@ public class RestControllerService implements RestController {
 
     @Activate
     void activate(Map<String, Object> properties) throws Exception {
-        // Add the default namespace
-        resourceManagers.put(DEFAULT_NAMESPACE, new HashSet<>());
-        restMappers.put(DEFAULT_NAMESPACE, new RestMapper());
+        // Add the default namespace if it has not already been added via addREST
+        if(!resourceManagers.containsKey(DEFAULT_NAMESPACE)) {
+            resourceManagers.put(DEFAULT_NAMESPACE, new HashSet<>());
+            restMappers.put(DEFAULT_NAMESPACE, new RestMapper());
+        }
         TreeMap<Integer, UriMapper> uriMapperMap = new TreeMap<>();
         uriMapperMap.put(0, s -> "");
         uriMappers.put(DEFAULT_SERVLET_PATTERN, uriMapperMap);
@@ -105,7 +107,7 @@ public class RestControllerService implements RestController {
     synchronized void addREST(REST resourceManager, Map<String, String> properties) {
         String namespace = properties.get(NAMESPACE_PARAM);
         if(namespace == null)
-            namespace = "";
+            namespace = DEFAULT_NAMESPACE;
         if(!resourceManagers.containsKey(namespace)) {
             resourceManagers.put(namespace, new HashSet<>());
             restMappers.put(namespace, new RestMapper());

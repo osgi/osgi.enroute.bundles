@@ -51,6 +51,7 @@ public class SecurityFilter implements Filter {
 	private AtomicReference<AuthorityAdmin>		authorityAdminRef	= new AtomicReference<AuthorityAdmin>();
 	private volatile boolean					reported;
 	private String								realm;
+	private boolean 							allowAuthOverNonSecureLine 	= false;
 
 	@ObjectClassDefinition
 	@interface Config {
@@ -64,6 +65,11 @@ public class SecurityFilter implements Filter {
 		String pattern();
 		
 		String osgi_http_whiteboard_filter_regex();
+		
+		@Meta.AD(deflt = "false", description="Authentication over non-secure lines is dangerous. "
+											+ "But sometimes it is necessary, eg behind a reverse "
+											+ "proxy which handles HTTPS. ")
+		boolean allowAuthOverNonSecureLine();
 	}
 
 	/*
@@ -96,8 +102,10 @@ public class SecurityFilter implements Filter {
 		// and an open line is basically all,well, eh, open
 		//
 
-		if (!req.isSecure())
+		if (!allowAuthOverNonSecureLine && !req.isSecure()) {
 			run(null, runAs);
+			return;
+		}
 
 		if (req instanceof HttpServletRequest) {
 

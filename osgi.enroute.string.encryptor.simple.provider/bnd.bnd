@@ -1,0 +1,30 @@
+#
+# OSGI ENROUTE STRING ENCRYPTOR SIMPLE PROVIDER BUNDLE 
+#
+
+
+Bundle-Version:					1.0.0.${tstamp}
+Bundle-Description: A bundle that provides a Jasypt based simple String Encryptor
+
+Private-Package:  \
+	osgi.enroute.string.encryptor.simple.provider
+	
+-buildpath: \
+	osgi.enroute.base.api;version=1.0,\
+	jar/org.apache.servicemix.bundles.jasypt-1.9.2.1.jar;version=file
+	
+-testpath: \
+	osgi.enroute.junit.wrapper;version=4.12
+
+-includeresource: \
+	{readme.md},\
+	{@org.apache.servicemix.bundles.jasypt-1.9.2.1.jar}
+
+-includeresource.license = jar/licenses/LICENSE,jar/licenses/DEPENDENCIES
+
+-runrequires:  \
+	osgi.identity;filter:='(osgi.identity=osgi.enroute.string.encryptor.simple.provider)'
+	
+-runbundles: \
+	${error;Resolve first}
+Bundle-Name: Jasypt String Encryptor Provider

@@ -1,0 +1,17 @@
+// ------------------------------------------------------------------
+// Transitive dependencies of this project determined from the
+// maven pom organized by organization.
+// ------------------------------------------------------------------
+
+Apache ServiceMix :: Bundles :: jasypt
+
+
+From: 'The JASYPT team' (http://www.jasypt.org)
+  - JASYPT: Java Simplified Encryption (http://www.jasypt.org) org.jasypt:jasypt:jar:1.9.2
+    License: The Apache Software License, Version 2.0  (http://www.apache.org/licenses/LICENSE-2.0.txt)
+  - JASYPT: Java Simplified Encryption (http://www.jasypt.org) org.jasypt:jasypt:jar:1.9.2
+    License: The Apache Software License, Version 2.0  (http://www.apache.org/licenses/LICENSE-2.0.txt)
+
+
+
+
